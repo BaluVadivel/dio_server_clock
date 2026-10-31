@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only token; fork PRs never get write access or secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: 3.9.2
+
+      - run: dart pub get
+
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed lib test example
+
+      - run: dart analyze --fatal-infos
+
+      - run: dart test
+
+      - name: Publish dry run
+        run: dart pub publish --dry-run
+
+  # The pubspec promises Dart ^3.7.2 and Dio >=4.0.0 <6.0.0; check both ends.
+  compat:
+    name: compat (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: minimum Dart SDK
+            sdk: 3.7.2
+          - name: Dio 4.0.0
+            sdk: 3.9.2
+            dio: 4.0.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: ${{ matrix.sdk }}
+
+      - name: Pin Dio ${{ matrix.dio }}
+        if: matrix.dio
+        env:
+          DIO_VERSION: ${{ matrix.dio }}
+        run: |
+          printf 'dependency_overrides:\n  dio: %s\n' "$DIO_VERSION" > pubspec_overrides.yaml
+
+      - run: dart pub get
+
+      - name: Resolved Dio version
+        run: dart pub deps --style=compact | grep -E '^- dio '
+
+      - run: dart analyze
+
+      - run: dart test
