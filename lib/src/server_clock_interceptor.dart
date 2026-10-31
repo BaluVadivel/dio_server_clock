@@ -7,8 +7,8 @@ import 'url_rule.dart';
 /// Feeds a [ServerClock] from the `Date` header of Dio responses.
 ///
 /// ```dart
-/// final serverClock = ServerClock();
-/// dio.interceptors.add(ServerClockInterceptor(serverClock)); // add it last
+/// dio.interceptors.add(ServerClockInterceptor()); // add it last
+/// final now = ServerClock.instance.now;
 /// ```
 ///
 /// For each response it measures the round trip, skips cached copies, and
@@ -25,7 +25,13 @@ import 'url_rule.dart';
 /// responses. If a callback you pass throws, the request goes through and
 /// only the sample is skipped.
 class ServerClockInterceptor extends Interceptor {
-  /// Creates an interceptor that feeds [serverClock].
+  /// Creates an interceptor that feeds [serverClock], or
+  /// [ServerClock.instance] when it is null.
+  ///
+  /// Pass your own [ServerClock] for a backend whose clock is independent of
+  /// your main servers (for example a third-party service), for custom
+  /// settings, or in tests. Several Dio instances for the same backend
+  /// should feed the same clock.
   ///
   /// With no other arguments, every response is sampled unless the default
   /// cache check skips it. The arguments narrow that down.
@@ -65,7 +71,6 @@ class ServerClockInterceptor extends Interceptor {
   ///
   /// ```dart
   /// ServerClockInterceptor(
-  ///   serverClock,
   ///   allow: ['https://api.example.com'],
   ///   deny: ['/v1/public'],
   ///   include: (options) => options.extra['skipClock'] != true,
@@ -74,18 +79,20 @@ class ServerClockInterceptor extends Interceptor {
   ///       : CacheVerdict.useDefault,
   /// );
   /// ```
-  ServerClockInterceptor(
-    this.serverClock, {
+  ServerClockInterceptor({
+    ServerClock? serverClock,
     List<String>? allow,
     List<String>? deny,
     bool Function(RequestOptions options)? include,
     CacheVerdict Function(Response<dynamic> response)? cacheVerdict,
-  }) : _allow = allow?.map(UrlRule.parse).toList(growable: false),
+  }) : serverClock = serverClock ?? ServerClock.instance,
+       _allow = allow?.map(UrlRule.parse).toList(growable: false),
        _deny = deny?.map(UrlRule.parse).toList(growable: false),
        _include = include,
        _cacheVerdict = cacheVerdict;
 
-  /// The clock this interceptor feeds.
+  /// The clock this interceptor feeds: the one passed in, or
+  /// [ServerClock.instance].
   final ServerClock serverClock;
 
   final List<UrlRule>? _allow;

@@ -42,15 +42,34 @@ dependencies:
 ```dart
 import 'package:dio_server_clock/dio_server_clock.dart';
 
-final serverClock = ServerClock(); // one per backend, app-wide
+dio.interceptors.add(ServerClockInterceptor()); // add it last
 
-dio.interceptors.add(ServerClockInterceptor(serverClock)); // add it last
-
-final now = serverClock.now; // DateTime? in UTC; null = no valid time yet
+final now = ServerClock.instance.now; // DateTime? in UTC; null = no valid time yet
 if (now == null) {
   // Show "syncing…" or a neutral state; don't guess.
 }
 ```
+
+`ServerClock.instance` is a shared clock that the interceptor feeds by default, so there is nothing to create or pass around. Add a default interceptor to every Dio instance that talks to your servers; they all feed the same clock.
+
+### Several backends or custom settings
+
+Create your own `ServerClock` and pass it to the interceptor when:
+
+- a backend's clock is independent of your main servers (for example a third-party service you sample on purpose);
+- you need settings other than the defaults (see [API reference](#api-reference));
+- in tests, so each test starts with no time.
+
+```dart
+final paymentsClock = ServerClock(tolerance: const Duration(seconds: 10));
+paymentsDio.interceptors.add(ServerClockInterceptor(serverClock: paymentsClock));
+
+final paymentsNow = paymentsClock.now;
+```
+
+Read the time from the clock the interceptor feeds. Your own servers usually sync to the same time source, so one clock is enough for all of them.
+
+Each isolate has its own `ServerClock.instance`. `dispose()` does nothing on it, so no part of the app can close its streams for everyone. Tests that use it should call `ServerClock.instance.reset()` in `setUp`.
 
 ## Valid time or no time
 
@@ -92,7 +111,6 @@ Lists of URLs or paths:
 
 ```dart
 ServerClockInterceptor(
-  serverClock,
   allow: [
     'https://api.myapp.com',           // base URL: every path on that host
     'https://auth.myapp.com/v1/login', // URL with a path: that path and below
@@ -168,7 +186,6 @@ For anything else, pass `cacheVerdict`. It runs before the default check and ret
 
 ```dart
 ServerClockInterceptor(
-  serverClock,
   cacheVerdict: (response) {
     // Your offline cache marks its responses.
     if (response.extra['fromLocalCache'] == true) return CacheVerdict.cached;
@@ -204,7 +221,7 @@ The time runs on the platform's boot clock, which keeps counting through deep sl
 ```dart
 @override
 void didChangeAppLifecycleState(AppLifecycleState state) {
-  if (state == AppLifecycleState.resumed) serverClock.invalidate();
+  if (state == AppLifecycleState.resumed) ServerClock.instance.invalidate();
 }
 ```
 
@@ -222,8 +239,8 @@ Example: checking market hours in India Standard Time.
 
 ```dart
 /// True or false, or null when the time is unknown.
-bool? isMarketOpen(ServerClock serverClock) {
-  final t = serverClock.nowIn(const Duration(hours: 5, minutes: 30));
+bool? isMarketOpen() {
+  final t = ServerClock.instance.nowIn(const Duration(hours: 5, minutes: 30));
   if (t == null) return null;
   if (t.weekday == DateTime.saturday || t.weekday == DateTime.sunday) {
     return false;
@@ -259,7 +276,7 @@ ServerClock({
 | `maxRoundTripBeforeSync` | 10 s | Looser limit while the clock has no time, so a slow network still gets one |
 | `tolerance` | 5 s | How far a sample may disagree with `now` before it counts as ahead (replaces the time) or behind (ignored as a cached copy). See [How samples are chosen](#how-samples-are-chosen) |
 
-A negative duration throws `ArgumentError`.
+A negative duration throws `ArgumentError`. `ServerClock.instance` is the shared clock with these defaults; create your own for other settings.
 
 | Member | What it gives or does |
 | --- | --- |
@@ -275,13 +292,14 @@ A negative duration throws `ArgumentError`.
 | `reset()` | Forgets the time, for example after switching to another backend environment |
 | `addHttpDate(header, roundTrip)` | Feeds a raw `Date` header, for responses outside Dio. Measure `roundTrip` with a `Stopwatch` and skip cached responses yourself |
 | `addSample(serverTime, roundTrip, resolution:)` | Feeds a server time from elsewhere (a JSON field, a custom header) |
-| `dispose()` | Closes the two streams; the clock keeps working. Not needed for an app-wide clock |
+| `ServerClock.instance` | The shared clock that `ServerClockInterceptor()` feeds by default |
+| `dispose()` | Closes the two streams; the clock keeps working. Not needed for an app-wide clock, and does nothing on `ServerClock.instance` |
 
 ### ServerClockInterceptor
 
 ```dart
-ServerClockInterceptor(
-  ServerClock serverClock, {
+ServerClockInterceptor({
+  ServerClock? serverClock,
   List<String>? allow,
   List<String>? deny,
   bool Function(RequestOptions options)? include,
@@ -291,6 +309,7 @@ ServerClockInterceptor(
 
 | Parameter | Runs | Default | Meaning |
 | --- | --- | --- | --- |
+| `serverClock` | — | `ServerClock.instance` | The clock to feed. See [Several backends or custom settings](#several-backends-or-custom-settings) |
 | `allow` | Before the request | All URLs | Sample only URLs matching an entry. See [allow and deny](#allow-and-deny) |
 | `deny` | Before the request | None | Never sample URLs matching an entry; always wins over `allow` |
 | `include` | Before the request | All requests | Your own test on `RequestOptions`. See [include](#include) |
@@ -315,6 +334,6 @@ Nothing runs in the background: no timers, threads or wake-ups, so there is no i
 
 **Why not NTP?** NTP needs UDP access to a time server, which some networks block, and it gives the time of a third party rather than your server. This package needs nothing beyond the requests you already make.
 
-**Several backends?** Create one `ServerClock` and interceptor per `Dio` instance.
+**Several backends?** Your own servers can share `ServerClock.instance`. For a backend with an independent clock, create a `ServerClock` and pass it as `serverClock:`. See [Several backends or custom settings](#several-backends-or-custom-settings).
 
 **Can I feed samples myself?** Yes: `addHttpDate(header, roundTrip)` or `addSample(serverTime, roundTrip, resolution: ...)`.

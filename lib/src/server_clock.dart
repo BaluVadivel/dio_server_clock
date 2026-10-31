@@ -9,10 +9,9 @@ import 'monotonic.dart';
 /// A clock anchored to server time: it gives a valid time or no time.
 ///
 /// ```dart
-/// final serverClock = ServerClock(); // one per backend, app-wide
-/// dio.interceptors.add(ServerClockInterceptor(serverClock));
+/// dio.interceptors.add(ServerClockInterceptor());
 ///
-/// final now = serverClock.now; // DateTime? in UTC
+/// final now = ServerClock.instance.now; // DateTime? in UTC
 /// if (now == null) {
 ///   // No valid time yet: show "syncing…", don't guess.
 /// }
@@ -25,6 +24,10 @@ import 'monotonic.dart';
 /// until a sample is accepted, and whenever the time can't be trusted. The
 /// device clock is never used for the time.
 ///
+/// Most apps use the shared [instance]. Create your own clock for a backend
+/// whose clock is independent of your main servers, for custom settings, or
+/// in tests.
+///
 /// Call [invalidate] when the app resumes from the background.
 class ServerClock {
   /// Creates a clock with no time; [now] is null until the first sample.
@@ -33,14 +36,57 @@ class ServerClock {
   /// [maxRoundTripBeforeSync] and [tolerance]. Throws an [ArgumentError] if
   /// a duration is negative.
   ServerClock({
-    this.maxRoundTrip = const Duration(seconds: 2),
-    this.maxRoundTripBeforeSync = const Duration(seconds: 10),
-    this.tolerance = const Duration(seconds: 5),
-  }) : _source = resolveMonotonicSource() {
+    Duration maxRoundTrip = _defaultMaxRoundTrip,
+    Duration maxRoundTripBeforeSync = _defaultMaxRoundTripBeforeSync,
+    Duration tolerance = _defaultTolerance,
+  }) : this._(
+         maxRoundTrip: maxRoundTrip,
+         maxRoundTripBeforeSync: maxRoundTripBeforeSync,
+         tolerance: tolerance,
+         isShared: false,
+       );
+
+  ServerClock._({
+    required this.maxRoundTrip,
+    required this.maxRoundTripBeforeSync,
+    required this.tolerance,
+    required bool isShared,
+  }) : _isShared = isShared,
+       _source = resolveMonotonicSource() {
     _checkNotNegative(maxRoundTrip, 'maxRoundTrip');
     _checkNotNegative(maxRoundTripBeforeSync, 'maxRoundTripBeforeSync');
     _checkNotNegative(tolerance, 'tolerance');
   }
+
+  /// The shared clock, with the default settings, created the first time it
+  /// is used.
+  ///
+  /// `ServerClockInterceptor()` feeds this clock unless you pass another one,
+  /// so most apps need nothing more:
+  ///
+  /// ```dart
+  /// dio.interceptors.add(ServerClockInterceptor());
+  /// final now = ServerClock.instance.now;
+  /// ```
+  ///
+  /// Every Dio instance with a default interceptor feeds it, which is right
+  /// when they all talk to your own servers. Create your own [ServerClock]
+  /// instead for a backend whose clock is independent of yours, or for
+  /// custom settings.
+  ///
+  /// Each isolate has its own shared clock. [dispose] does nothing on it, so
+  /// one caller can't close its streams for the whole app. In tests, call
+  /// [reset] on it in `setUp`, or use separate instances.
+  static final ServerClock instance = ServerClock._(
+    maxRoundTrip: _defaultMaxRoundTrip,
+    maxRoundTripBeforeSync: _defaultMaxRoundTripBeforeSync,
+    tolerance: _defaultTolerance,
+    isShared: true,
+  );
+
+  static const _defaultMaxRoundTrip = Duration(seconds: 2);
+  static const _defaultMaxRoundTripBeforeSync = Duration(seconds: 10);
+  static const _defaultTolerance = Duration(seconds: 5);
 
   static void _checkNotNegative(Duration value, String name) {
     if (value.isNegative) throw ArgumentError.value(value, name, 'is negative');
@@ -73,6 +119,7 @@ class ServerClock {
   static const Duration httpDateResolution = Duration(seconds: 1);
 
   final MonotonicSource _source;
+  final bool _isShared;
 
   // Server time and monotonic reading at the anchor, in microseconds.
   int? _anchorServerMicros;
@@ -297,9 +344,12 @@ class ServerClock {
   }
 
   /// Closes [onAnchor] and [onSyncChanged]. The clock keeps working
-  /// afterwards. Call it when the clock is no longer needed, for example in
-  /// tests; an app-wide clock never needs it.
+  /// afterwards. Call it when a clock you created is no longer needed, for
+  /// example in tests; an app-wide clock never needs it.
+  ///
+  /// Does nothing on [instance], whose streams the whole app may listen to.
   Future<void> dispose() async {
+    if (_isShared) return;
     await _anchors.close();
     await _syncChanges.close();
   }

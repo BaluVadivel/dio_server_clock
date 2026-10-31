@@ -41,8 +41,9 @@ class ClockPage extends StatefulWidget {
 }
 
 class _ClockPageState extends State<ClockPage> with WidgetsBindingObserver {
-  final _clock = ServerClock();
-  late final _dio = Dio()..interceptors.add(ServerClockInterceptor(_clock));
+  // The shared clock, fed by a default interceptor: the setup most apps use.
+  final _clock = ServerClock.instance;
+  late final _dio = Dio()..interceptors.add(ServerClockInterceptor());
   final _log = <String>[];
   final _subscriptions = <StreamSubscription<Object?>>[];
   Timer? _ticker;
@@ -91,7 +92,6 @@ class _ClockPageState extends State<ClockPage> with WidgetsBindingObserver {
     for (final s in _subscriptions) {
       s.cancel();
     }
-    _clock.dispose();
     _dio.close();
     super.dispose();
   }
@@ -174,8 +174,10 @@ class _ClockPageState extends State<ClockPage> with WidgetsBindingObserver {
       _busy = true;
       _checkResult = null;
     });
+    // Its own clock, so the check never feeds or reads the shared one.
     final probe = ServerClock();
-    final probeDio = Dio()..interceptors.add(ServerClockInterceptor(probe));
+    final probeDio =
+        Dio()..interceptors.add(ServerClockInterceptor(serverClock: probe));
     try {
       await probeDio.get<dynamic>(_url);
     } catch (_) {

@@ -80,7 +80,7 @@ Dio _dio(
 }) {
   final interceptor =
       clockOrInterceptor is ServerClock
-          ? ServerClockInterceptor(clockOrInterceptor)
+          ? ServerClockInterceptor(serverClock: clockOrInterceptor)
           : clockOrInterceptor as ServerClockInterceptor;
   return Dio(BaseOptions(baseUrl: 'https://api.example.com'))
     ..httpClientAdapter = _FakeAdapter(
@@ -238,7 +238,7 @@ void main() {
       final c = ServerClock();
       try {
         await _dio(
-          ServerClockInterceptor(c, cacheVerdict: verdict),
+          ServerClockInterceptor(serverClock: c, cacheVerdict: verdict),
           headers: headers,
           status: status,
         ).get<dynamic>('/v1/positions');
@@ -259,7 +259,7 @@ void main() {
       final c = ServerClock();
       await _dio(
         ServerClockInterceptor(
-          c,
+          serverClock: c,
           cacheVerdict:
               (r) =>
                   r.requestOptions.extra['offline'] == true
@@ -297,7 +297,7 @@ void main() {
       final c = ServerClock();
       final dio = _dio(
         ServerClockInterceptor(
-          c,
+          serverClock: c,
           cacheVerdict:
               (r) =>
                   r.requestOptions.path.startsWith('/v1/user')
@@ -333,7 +333,7 @@ void main() {
 
     test('null lists sample every URL', () async {
       expect(
-        await sampled(ServerClockInterceptor.new, [
+        await sampled((c) => ServerClockInterceptor(serverClock: c), [
           '/v1/x',
           'https://other.example.org/y',
         ]),
@@ -344,7 +344,7 @@ void main() {
     test('allow with a base URL, a full URL and a path', () async {
       final result = await sampled(
         (c) => ServerClockInterceptor(
-          c,
+          serverClock: c,
           allow: [
             'https://api.example.com/v1/user',
             'https://auth.example.org',
@@ -374,9 +374,10 @@ void main() {
 
     test('an empty allow list samples nothing', () async {
       expect(
-        await sampled((c) => ServerClockInterceptor(c, allow: const []), [
-          '/v1/x',
-        ]),
+        await sampled(
+          (c) => ServerClockInterceptor(serverClock: c, allow: const []),
+          ['/v1/x'],
+        ),
         isEmpty,
       );
     });
@@ -384,7 +385,7 @@ void main() {
     test('deny skips matching URLs and wins over allow', () async {
       final result = await sampled(
         (c) => ServerClockInterceptor(
-          c,
+          serverClock: c,
           allow: ['https://api.example.com'],
           deny: ['/v1/public', 'https://api.example.com/v1/config'],
         ),
@@ -396,7 +397,7 @@ void main() {
     test('a narrow deny path beats a broad allow URL', () async {
       final result = await sampled(
         (c) => ServerClockInterceptor(
-          c,
+          serverClock: c,
           // Order doesn't matter either: deny is listed first here.
           deny: ['/api/v1/public', 'https://cdn.example.com'],
           allow: ['https://api.example.com', 'https://cdn.example.com'],
@@ -416,7 +417,7 @@ void main() {
       final c = ServerClock();
       final dio = _dio(
         ServerClockInterceptor(
-          c,
+          serverClock: c,
           allow: ['/v1'],
           deny: ['/v1/search'],
           include: (o) => o.method == 'GET',
@@ -433,7 +434,7 @@ void main() {
     test('later changes to the lists have no effect', () async {
       final c = ServerClock();
       final allow = ['/v1/orders'];
-      final dio = _dio(ServerClockInterceptor(c, allow: allow));
+      final dio = _dio(ServerClockInterceptor(serverClock: c, allow: allow));
       allow.add('/v1/search');
       await dio.get<dynamic>('/v1/search');
       expect(c.isSynced, isFalse);
@@ -451,12 +452,12 @@ void main() {
         '/x#top',
       ]) {
         expect(
-          () => ServerClockInterceptor(c, allow: [entry]),
+          () => ServerClockInterceptor(serverClock: c, allow: [entry]),
           throwsArgumentError,
           reason: entry,
         );
         expect(
-          () => ServerClockInterceptor(c, deny: [entry]),
+          () => ServerClockInterceptor(serverClock: c, deny: [entry]),
           throwsArgumentError,
           reason: entry,
         );
@@ -468,7 +469,10 @@ void main() {
     test('when include throws', () async {
       final c = ServerClock();
       final response = await _dio(
-        ServerClockInterceptor(c, include: (_) => throw StateError('boom')),
+        ServerClockInterceptor(
+          serverClock: c,
+          include: (_) => throw StateError('boom'),
+        ),
       ).get<dynamic>('/v1/positions');
       expect(response.statusCode, 200);
       expect(c.isSynced, isFalse);
@@ -478,7 +482,7 @@ void main() {
       final c = ServerClock();
       final response = await _dio(
         ServerClockInterceptor(
-          c,
+          serverClock: c,
           cacheVerdict: (_) => throw StateError('boom'),
         ),
       ).get<dynamic>('/v1/positions');
@@ -523,7 +527,7 @@ void main() {
     final dio =
         Dio(BaseOptions(baseUrl: 'https://api.example.com'))
           ..httpClientAdapter = adapter
-          ..interceptors.add(ServerClockInterceptor(c));
+          ..interceptors.add(ServerClockInterceptor(serverClock: c));
     final first = await dio.get<dynamic>('/v1/positions');
     await Future<void>.delayed(const Duration(milliseconds: 1100));
     // Resending the same options, as retry interceptors do.
@@ -545,7 +549,7 @@ void main() {
             ..httpClientAdapter = _FakeAdapter(const {
               'date': [_date],
             }, onFetch: () => source.advance(networkTime))
-            ..interceptors.add(ServerClockInterceptor(c));
+            ..interceptors.add(ServerClockInterceptor(serverClock: c));
       await dio.get<dynamic>('/v1/positions');
       return c;
     }
@@ -569,7 +573,7 @@ void main() {
             ..httpClientAdapter = _FakeAdapter(const {
               'date': [_date],
             }, onFetch: () => source.micros = null)
-            ..interceptors.add(ServerClockInterceptor(c));
+            ..interceptors.add(ServerClockInterceptor(serverClock: c));
       final response = await dio.get<dynamic>('/v1/positions');
       expect(response.statusCode, 200);
       expect(c.now, isNull);

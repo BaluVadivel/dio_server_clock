@@ -5,13 +5,12 @@ A Flutter test app (Android and iOS) for checking the clock on a real device: sy
 ## Setup
 
 ```dart
-final serverClock = ServerClock();
-final dio = Dio()..interceptors.add(ServerClockInterceptor(serverClock));
+final dio = Dio()..interceptors.add(ServerClockInterceptor());
 
 // On AppLifecycleState.resumed:
-serverClock.invalidate();
+ServerClock.instance.invalidate();
 
-final now = serverClock.now; // null = no valid time; show "syncing…"
+final now = ServerClock.instance.now; // null = no valid time; show "syncing…"
 ```
 
 ## Run it

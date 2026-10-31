@@ -5,10 +5,9 @@
 /// affect. The time is valid or null, never the device clock.
 ///
 /// ```dart
-/// final serverClock = ServerClock();
-/// dio.interceptors.add(ServerClockInterceptor(serverClock));
+/// dio.interceptors.add(ServerClockInterceptor());
 ///
-/// final now = serverClock.now; // null until the first response
+/// final now = ServerClock.instance.now; // null until the first response
 /// ```
 ///
 /// - [ServerClock]: the clock; read [ServerClock.now] or [ServerClock.nowIn].
