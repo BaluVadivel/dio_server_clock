@@ -8,14 +8,30 @@ import 'monotonic.dart';
 
 /// A clock anchored to server time: it gives a valid time or no time.
 ///
-/// Feed it samples (usually through `ServerClockInterceptor`) and read the
-/// time from [now] or [nowIn]. [now] is null until a sample is accepted, and
-/// whenever the time can't be trusted. The device clock and timezone are
-/// never used.
+/// ```dart
+/// final serverClock = ServerClock(); // one per backend, app-wide
+/// dio.interceptors.add(ServerClockInterceptor(serverClock));
+///
+/// final now = serverClock.now; // DateTime? in UTC
+/// if (now == null) {
+///   // No valid time yet: show "syncing…", don't guess.
+/// }
+/// ```
+///
+/// Feed it samples (usually through `ServerClockInterceptor`, or yourself
+/// with [addHttpDate] or [addSample]) and read the time from [now] or
+/// [nowIn]. Between samples the time advances on the platform's monotonic
+/// clock, so device time and timezone changes have no effect. [now] is null
+/// until a sample is accepted, and whenever the time can't be trusted. The
+/// device clock is never used for the time.
+///
+/// Call [invalidate] when the app resumes from the background.
 class ServerClock {
   /// Creates a clock with no time; [now] is null until the first sample.
   ///
-  /// Throws an [ArgumentError] if a duration is negative.
+  /// The defaults suit most apps; see [maxRoundTrip],
+  /// [maxRoundTripBeforeSync] and [tolerance]. Throws an [ArgumentError] if
+  /// a duration is negative.
   ServerClock({
     this.maxRoundTrip = const Duration(seconds: 2),
     this.maxRoundTripBeforeSync = const Duration(seconds: 10),
@@ -31,14 +47,18 @@ class ServerClock {
   }
 
   /// Samples slower than this are ignored while the clock has a time.
+  /// Default 2 s.
+  ///
+  /// A slow round trip makes the time less certain (see [uncertainty]), so
+  /// once the clock has a time it keeps it rather than take a worse one.
   final Duration maxRoundTrip;
 
   /// Looser limit used while the clock has no time, so a slow network still
-  /// gets one.
+  /// gets one. Default 10 s.
   final Duration maxRoundTripBeforeSync;
 
   /// How far a sample may disagree with [now] before it counts as ahead or
-  /// behind.
+  /// behind. Default 5 s.
   ///
   /// A sample more than this ahead means the current time was stale, so it
   /// replaces it. A sample more than this behind is probably a cached copy,
@@ -68,11 +88,13 @@ class ServerClock {
   /// Whether the clock has a valid time: the same as `now != null`.
   bool get isSynced => now != null;
 
-  /// Fires every time a sample is accepted.
+  /// Fires every time a sample is accepted, with its details. Use it for
+  /// logging or for a "your device time is off" banner.
   Stream<ClockSample> get onAnchor => _anchors.stream;
 
   /// Fires true when the clock gets a time and false when it loses it
-  /// ([reset], or [invalidate] where sleep isn't counted).
+  /// ([reset], or [invalidate] where sleep isn't counted). Use it to rebuild
+  /// UI that shows "syncing…".
   Stream<bool> get onSyncChanged => _syncChanges.stream;
 
   /// Current server time in UTC, or null when there is no valid time.
@@ -112,6 +134,9 @@ class ServerClock {
 
   /// Worst-case error of [now] when the current sample was accepted: half the
   /// round trip plus half the sample's resolution. Null when [now] is null.
+  ///
+  /// It doesn't include the monotonic clock's drift since that sample, which
+  /// is small over hours; each new sample resets it.
   Duration? get uncertainty => isSynced ? _anchorUncertainty : null;
 
   /// Whether the clock keeps counting while the device is in deep sleep.
@@ -120,7 +145,13 @@ class ServerClock {
   /// on web and Windows, where [invalidate] clears the time.
   bool get countsSleep => _source.countsSleep;
 
-  /// Adds a sample from a raw HTTP `Date` header value.
+  /// Adds a sample from a raw HTTP `Date` header value, for responses that
+  /// don't go through Dio (another HTTP client, a WebSocket handshake).
+  ///
+  /// [roundTrip] is the time from sending the request to receiving the
+  /// response, measured on a monotonic clock (a `Stopwatch`), never with
+  /// `DateTime.now()`. Skip cached responses yourself; see `isCacheHit` for
+  /// the headers to look at.
   ///
   /// Returns true if it was accepted; false if the header is not a valid HTTP
   /// date or the sample was rejected.
@@ -159,11 +190,13 @@ class ServerClock {
     );
   }
 
-  /// Adds a sample.
+  /// Adds a sample from a server time you got another way (a JSON field, a
+  /// custom header).
   ///
   /// [serverTime] is the time the server stamped on the response, truncated
   /// to [resolution] (one second for the HTTP `Date` header); [roundTrip] is
-  /// how long the request took. Returns true if it was accepted.
+  /// how long the request took, measured on a monotonic clock (a
+  /// `Stopwatch`). Returns true if it was accepted.
   ///
   /// The newest acceptable sample becomes the time, except one more than
   /// [tolerance] behind [now] (see [tolerance]).
@@ -237,7 +270,8 @@ class ServerClock {
     return agree && span > 2 * tolerance.inMicroseconds;
   }
 
-  /// Call when the app resumes.
+  /// Call when the app resumes, for example on
+  /// `AppLifecycleState.resumed`.
   ///
   /// Where the clock counts deep sleep ([countsSleep]), the time stays valid
   /// and this does nothing. Elsewhere the clock may have paused while the
@@ -247,6 +281,9 @@ class ServerClock {
   }
 
   /// Forgets the time; [now] is null until the next sample.
+  ///
+  /// Use it when the time may belong to another server, for example after
+  /// switching the app to a different backend environment.
   void reset() {
     final hadTime = _nowMicros() != null;
     _anchorServerMicros = null;
@@ -260,7 +297,8 @@ class ServerClock {
   }
 
   /// Closes [onAnchor] and [onSyncChanged]. The clock keeps working
-  /// afterwards.
+  /// afterwards. Call it when the clock is no longer needed, for example in
+  /// tests; an app-wide clock never needs it.
   Future<void> dispose() async {
     await _anchors.close();
     await _syncChanges.close();

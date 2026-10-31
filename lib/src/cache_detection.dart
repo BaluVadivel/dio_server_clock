@@ -1,9 +1,37 @@
 import 'package:dio/dio.dart';
 
+/// What a `cacheVerdict` callback of `ServerClockInterceptor` decides about a
+/// response: whether its `Date` header can be used.
+///
+/// Return [useDefault] for anything you don't want to decide, so the default
+/// check (`304` and [isCacheHit]) still applies.
+///
+/// ```dart
+/// cacheVerdict: (response) {
+///   if (response.extra['fromLocalCache'] == true) return CacheVerdict.cached;
+///   return CacheVerdict.useDefault;
+/// },
+/// ```
+enum CacheVerdict {
+  /// The response came from a cache: skip it, whatever its headers say.
+  cached,
+
+  /// The response is live: sample its `Date`, skipping the default check
+  /// (including the `304` check). Use only when you know no cache answered.
+  fresh,
+
+  /// Let the default check decide: `304` responses and headers that
+  /// [isCacheHit] detects are skipped.
+  useDefault,
+}
+
 const _cloudflareHits = {'HIT', 'STALE', 'UPDATING', 'REVALIDATED'};
 
 /// True when response headers show the response came from a cache, so its
 /// `Date` header may be old.
+///
+/// `ServerClockInterceptor` uses it as its default cache check; it is
+/// exported so you can use the same check elsewhere.
 ///
 /// Detects:
 /// - `Age` above 0 (RFC 9111). `Age: 0` alone is not a hit, because some

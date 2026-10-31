@@ -69,17 +69,65 @@ What the package can't detect: a server or CDN whose own clock is wrong, and a `
 
 ## Choosing which requests to sample
 
-Sample authenticated, user-specific responses, which CDNs don't cache (`Cache-Control: private` or `no-store`). Avoid static files and public cacheable endpoints: a cached copy carries an old `Date`.
+Take the time only from your own backend, the authority for your app's decisions. Other servers (maps, payments, analytics, image CDNs) have their own clocks, and public cacheable endpoints can serve old copies.
+
+Three optional filters decide, **before** a request is sent, whether its response is sampled. A request is sampled only if all three pass, so each filter can only remove requests, never add them back:
+
+| Filter | Question it answers | Default |
+| --- | --- | --- |
+| `allow` | Does the URL match at least one entry? | Null: every URL |
+| `deny` | Does the URL match no entry? | Null: no URL denied |
+| `include` | Does your own function return true? | Null: every request |
+
+Most apps only need `allow: ['https://api.myapp.com']`.
+
+### allow and deny
+
+Lists of URLs or paths:
 
 ```dart
 ServerClockInterceptor(
   serverClock,
-  pathPrefixes: const ['/api/v1/user/', '/api/v1/orders'],
-  include: (options) => options.method == 'GET', // optional, combined with pathPrefixes
+  allow: [
+    'https://api.myapp.com',           // base URL: every path on that host
+    'https://auth.myapp.com/v1/login', // URL with a path: that path and below
+    '/api/v1/user',                    // path: on any host
+  ],
+  deny: ['/api/v1/public', 'https://api.myapp.com/v1/config'],
 );
 ```
 
-Login is a good first sample: it is never cached and happens before any screen that needs the time.
+| Rule | Behaviour |
+| --- | --- |
+| Entries | A path (`/...`) matches on any host. A URL matches the same scheme, host and port, and its path and below |
+| Path boundaries | Matching stops at `/`: `/api/user` matches `/api/user/42`, not `/api/users` |
+| Normalisation | Host is case-insensitive, path is case-sensitive, a default port equals no port, a trailing `/` is ignored, the request's query and fragment are ignored |
+| Which URL | The resolved request URL, so `baseUrl` + path and full URLs both work |
+| Combining | `allow`, `deny` and `include` must all pass, so **deny always wins** |
+| Defaults | `allow: null` allows every URL; `allow: []` allows none |
+| Invalid entries | An empty entry, a URL without a scheme or host, or one with a query or fragment throws `ArgumentError` when the interceptor is created |
+
+**Deny always wins**, whatever the order or how specific the entries are. With the setup above, `https://api.myapp.com/api/v1/public/feed` is allowed by `https://api.myapp.com` but denied by `/api/v1/public`, so it is not sampled. `deny` can only take URLs away, never add them.
+
+### include
+
+Your own yes/no function for rules a URL list can't express. It gets the request's `RequestOptions` (method, headers, `extra`, resolved `uri`) and returns true to sample the request, false to skip it. It runs after `allow` and `deny` pass.
+
+| Need | `include:` |
+| --- | --- |
+| Only some methods | `(o) => o.method == 'GET'` |
+| Only logged-in, per-user requests (not cached by CDNs) | `(o) => o.headers.containsKey('Authorization')` |
+| Only in production builds (skip mock or staging servers) | `(_) => isProduction` |
+| Skip one call site | `(o) => o.extra['skipClock'] != true`, then pass `Options(extra: {'skipClock': true})` on that call |
+| Wildcard subdomains | `(o) => o.uri.host.endsWith('.myapp.com')` |
+
+If `include` throws, the request goes through normally and only the sample is skipped.
+
+`include` decides on the request, before it's sent; `cacheVerdict` (below) decides on the response, after it arrives.
+
+### Which endpoints make good samples
+
+Authenticated, user-specific responses, which CDNs don't cache (`Cache-Control: private` or `no-store`). Login is a good first sample: it is never cached and happens before any screen that needs the time.
 
 ## How samples are chosen
 
@@ -101,16 +149,36 @@ A response is skipped when its headers show it came from a cache:
 
 `304 Not Modified` responses are skipped too. `isCacheHit(headers)` is exported if you need the same check.
 
-### Local caching interceptors
+### Your own cache rules
 
-Add `ServerClockInterceptor` after any caching interceptor. A cache that answers in its `onRequest` (like [dio_cache_plus](https://pub.dev/packages/dio_cache_plus)) never reaches it, and dio_cache_plus 2.1.0+ also marks hits with `Cache-Status` and `Age`, which are detected. For a cache that marks responses another way, pass `isFromCache`:
+Add `ServerClockInterceptor` after any caching interceptor. A cache that answers in its `onRequest` (like [dio_cache_plus](https://pub.dev/packages/dio_cache_plus)) never reaches it, and dio_cache_plus 2.1.0+ also marks hits with `Cache-Status` and `Age`, which are detected.
+
+For anything else, pass `cacheVerdict`. It runs before the default check and returns a `CacheVerdict`:
+
+| Verdict | Effect |
+| --- | --- |
+| `cached` | Skip the response, whatever its headers say |
+| `fresh` | Sample it, skipping the default check (including `304`). Only when you know no cache answered |
+| `useDefault` | The default check decides (`304` and `isCacheHit`) |
 
 ```dart
 ServerClockInterceptor(
   serverClock,
-  isFromCache: (response) => response.extra['fromMyCache'] == true,
+  cacheVerdict: (response) {
+    // Your offline cache marks its responses.
+    if (response.extra['fromLocalCache'] == true) return CacheVerdict.cached;
+    // Your CDN adds Age to live responses of this API.
+    if (response.requestOptions.path.startsWith('/api/v1/user/')) {
+      return CacheVerdict.fresh;
+    }
+    return CacheVerdict.useDefault;
+  },
 );
 ```
+
+Anything the callback doesn't decide falls through to the default check, so it can't be lost by accident. A callback that throws counts as `cached`. To turn the default check off entirely, return `CacheVerdict.fresh` for every response; do that only if no cache sits between the app and your server.
+
+Caches in the OS networking layer (for example NSURLCache or OkHttp behind a native Dio adapter) can return old responses without an `Age` header. Mark them with `cacheVerdict` if you can, and sample only `no-store` endpoints. `tolerance` rejects an old copy once the clock has a newer time, but not before the first sample.
 
 ### Interceptor order
 
@@ -166,13 +234,69 @@ Fixed offsets don't handle daylight saving time; for regions that use it, conver
 
 Browsers hide the `Date` header on cross-origin requests. The server must send `Access-Control-Expose-Headers: Date`. Android, iOS and desktop are unaffected.
 
-## Configuration
+## API reference
+
+The full reference, generated from the code comments, is on [pub.dev](https://pub.dev/documentation/dio_server_clock/latest/).
+
+### ServerClock
+
+```dart
+ServerClock({
+  Duration maxRoundTrip = const Duration(seconds: 2),
+  Duration maxRoundTripBeforeSync = const Duration(seconds: 10),
+  Duration tolerance = const Duration(seconds: 5),
+})
+```
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `maxRoundTrip` | 2 s | Slower samples are ignored while the clock has a time |
-| `maxRoundTripBeforeSync` | 10 s | Looser limit while the clock has no time |
-| `tolerance` | 5 s | How far a sample may disagree before it counts as ahead or behind |
+| `maxRoundTrip` | 2 s | Slower samples are ignored while the clock has a time, so a slow response can't replace a better time |
+| `maxRoundTripBeforeSync` | 10 s | Looser limit while the clock has no time, so a slow network still gets one |
+| `tolerance` | 5 s | How far a sample may disagree with `now` before it counts as ahead (replaces the time) or behind (ignored as a cached copy). See [How samples are chosen](#how-samples-are-chosen) |
+
+A negative duration throws `ArgumentError`.
+
+| Member | What it gives or does |
+| --- | --- |
+| `now` | Server time in UTC, or null when there is no valid time |
+| `nowIn(offset)` | Wall-clock fields at a fixed offset, or null. See [Fixed offsets](#fixed-offsets) |
+| `isSynced` | `now != null` |
+| `uncertainty` | Worst-case error of `now`: half the round trip plus half a second. Null with no time |
+| `deviceSkew` | Server time minus device time; positive means the device clock is behind. Null with no time |
+| `countsSleep` | Whether the clock keeps counting through deep sleep (see [Sleep and app lifecycle](#sleep-and-app-lifecycle)) |
+| `onSyncChanged` | `Stream<bool>`: true when the time arrives, false when it's lost. Use it to rebuild "syncing…" UI |
+| `onAnchor` | `Stream<ClockSample>`: every accepted sample, with `serverTime`, `roundTrip`, `uncertainty` and `deviceSkew`. For logging or a "your device time is off" banner |
+| `invalidate()` | Call on app resume. Keeps the time where sleep is counted; clears it elsewhere |
+| `reset()` | Forgets the time, for example after switching to another backend environment |
+| `addHttpDate(header, roundTrip)` | Feeds a raw `Date` header, for responses outside Dio. Measure `roundTrip` with a `Stopwatch` and skip cached responses yourself |
+| `addSample(serverTime, roundTrip, resolution:)` | Feeds a server time from elsewhere (a JSON field, a custom header) |
+| `dispose()` | Closes the two streams; the clock keeps working. Not needed for an app-wide clock |
+
+### ServerClockInterceptor
+
+```dart
+ServerClockInterceptor(
+  ServerClock serverClock, {
+  List<String>? allow,
+  List<String>? deny,
+  bool Function(RequestOptions options)? include,
+  CacheVerdict Function(Response<dynamic> response)? cacheVerdict,
+})
+```
+
+| Parameter | Runs | Default | Meaning |
+| --- | --- | --- | --- |
+| `allow` | Before the request | All URLs | Sample only URLs matching an entry. See [allow and deny](#allow-and-deny) |
+| `deny` | Before the request | None | Never sample URLs matching an entry; always wins over `allow` |
+| `include` | Before the request | All requests | Your own test on `RequestOptions`. See [include](#include) |
+| `cacheVerdict` | After the response | Default check | Decides whether a response is a cached copy. See [Your own cache rules](#your-own-cache-rules) |
+
+Add it last in `dio.interceptors`. Error responses (401, 500) are sampled too, because they come from the live server. It never throws while handling requests and never changes requests or responses; invalid `allow` or `deny` entries throw `ArgumentError` when it's created.
+
+### Cache detection
+
+- `CacheVerdict`: `cached`, `fresh` or `useDefault`, returned by `cacheVerdict`.
+- `isCacheHit(headers)`: the default header check, for use outside the interceptor.
 
 ## Performance
 
