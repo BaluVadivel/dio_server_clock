@@ -2,7 +2,7 @@
 
 All notable changes to dio_server_clock will be documented in this file.
 
-## [Unreleased]
+## [0.2.0] - 2026-Nov-01
 
 Breaking release: the clock now gives a valid time or no time.
 
