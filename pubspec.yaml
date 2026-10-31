@@ -1,6 +1,6 @@
 name: dio_server_clock
 description: "Tamper-resistant server time for Dio apps. Reads the HTTP Date header from responses you already make and anchors it to a monotonic clock."
-version: 0.1.0
+version: 0.2.0
 homepage: https://github.com/BaluVadivel/dio_server_clock
 repository: https://github.com/BaluVadivel/dio_server_clock.git
 issue_tracker: https://github.com/BaluVadivel/dio_server_clock/issues
