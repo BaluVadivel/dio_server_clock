@@ -24,10 +24,12 @@ jobs:
         with:
           sdk: 3.9.2
 
-      - run: dart pub get
+      # The example is a Flutter app; without --no-example pub also resolves
+      # it, which fails without the Flutter SDK.
+      - run: dart pub get --no-example
 
       - name: Check formatting
-        run: dart format --output=none --set-exit-if-changed lib test example
+        run: dart format --output=none --set-exit-if-changed lib test
 
       - run: dart analyze --fatal-infos
 
@@ -54,6 +56,9 @@ jobs:
           cache: true
 
       - run: flutter pub get
+
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed .
 
       - run: flutter analyze --fatal-infos
 
@@ -85,7 +90,9 @@ jobs:
         run: |
           printf 'dependency_overrides:\n  dio: %s\n' "$DIO_VERSION" > pubspec_overrides.yaml
 
-      - run: dart pub get
+      # The example is a Flutter app; without --no-example pub also resolves
+      # it, which fails without the Flutter SDK.
+      - run: dart pub get --no-example
 
       - name: Resolved Dio version
         run: dart pub deps --style=compact | grep -E '^- dio '

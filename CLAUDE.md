@@ -8,7 +8,8 @@ Pure Dart package: server-anchored time for Dio apps from the HTTP `Date` header
 - `dart format lib test example`
 - Example app (`example/`, Flutter, Android and iOS only): `cd example && flutter pub get && flutter analyze`. It's excluded from the root `dart analyze` because it needs Flutter
 - `dart pub publish --dry-run`: must report 0 warnings before a release
-- Dio 4 check: create `pubspec_overrides.yaml` with `dependency_overrides: {dio: 4.0.0}`, run `dart pub get && dart analyze && dart test`, then delete it
+- Dio 4 check: create `pubspec_overrides.yaml` with `dependency_overrides: {dio: 4.0.0}`, run `dart pub get --no-example && dart analyze && dart test`, then delete it
+- `dart pub get` also resolves `example/`, which needs Flutter. Where only Dart is installed (the CI and publish jobs), always use `dart pub get --no-example`
 
 ## Invariants: don't break these
 - **Valid time or no time**: `now` is the server time or null. Never fall back to the device clock; any doubt (no sample, monotonic clock unreadable or going backwards, `invalidate()` without sleep counting) means null.
@@ -34,7 +35,7 @@ Pure Dart package: server-anchored time for Dio apps from the HTTP `Date` header
 - A server or CDN with a wrong clock can't be detected.
 
 ## CI
-- `.github/workflows/ci.yml` runs on every PR and push to `main`: `verify` (format, `dart analyze --fatal-infos`, tests, publish dry run on Dart 3.9.2) and `compat` (the minimum Dart SDK 3.7.2, and Dio 4.0.0 via `pubspec_overrides.yaml`), plus `example` (`flutter analyze` in `example/` on Flutter 3.35.6).
+- `.github/workflows/ci.yml` runs on every PR and push to `main`: `verify` (format `lib` and `test`, `dart analyze --fatal-infos`, tests, publish dry run on Dart 3.9.2) and `compat` (the minimum Dart SDK 3.7.2, and Dio 4.0.0 via `pubspec_overrides.yaml`), plus `example` (format and `flutter analyze` in `example/` on Flutter 3.35.6). The Dart-only jobs run `dart pub get --no-example`.
 - Keep the SDK versions in `ci.yml` and `publish.yml` in sync; raise the `compat` SDK if the pubspec's minimum SDK changes.
 
 ## Releases

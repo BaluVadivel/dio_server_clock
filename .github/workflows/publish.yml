@@ -48,10 +48,12 @@ jobs:
         with:
           sdk: 3.9.2
 
-      - run: dart pub get
+      # The example is a Flutter app; without --no-example pub also resolves
+      # it, which fails without the Flutter SDK.
+      - run: dart pub get --no-example
 
       - name: Check formatting
-        run: dart format --output=none --set-exit-if-changed lib test example
+        run: dart format --output=none --set-exit-if-changed lib test
 
       - run: dart analyze --fatal-infos
 
@@ -77,7 +79,9 @@ jobs:
         with:
           sdk: 3.9.2
 
-      - run: dart pub get
+      # The example is a Flutter app; without --no-example pub also resolves
+      # it, which fails without the Flutter SDK.
+      - run: dart pub get --no-example
 
       - run: dart pub publish --force
 
