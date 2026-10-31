@@ -3,29 +3,39 @@
 Pure Dart package: server-anchored time for Dio apps from the HTTP `Date` header. Published on pub.dev and meant for production apps (including ones that also use `dio_cache_plus`). Treat every change as production-critical.
 
 ## Commands
-- `dart test`: unit tests (clock tests use `fake_async`; interceptor tests use a fake `HttpClientAdapter`)
+- `dart test`: unit tests (clock tests drive a `FakeSource` monotonic clock via `monotonicSourceOverride`; interceptor tests use a fake `HttpClientAdapter`). The platform-source tests check the real boot clock on macOS/Linux
 - `dart analyze`: must report no issues
 - `dart format lib test example`
+- Example app (`example/`, Flutter, Android and iOS only): `cd example && flutter pub get && flutter analyze`. It's excluded from the root `dart analyze` because it needs Flutter
 - `dart pub publish --dry-run`: must report 0 warnings before a release
-- Dio 4 check: create `pubspec_overrides.yaml` with `dependency_overrides: {dio: 4.0.0}`, run `dart pub get && dart analyze && dart test`, then delete it
+- Dio 4 check: create `pubspec_overrides.yaml` with `dependency_overrides: {dio: 4.0.0}`, run `dart pub get --no-example && dart analyze && dart test`, then delete it
+- `dart pub get` also resolves `example/`, which needs Flutter. Where only Dart is installed (the CI and publish jobs), always use `dart pub get --no-example`
 
 ## Invariants: don't break these
-- **Monotonic time**: use `startMonotonicStopwatch()` (`lib/src/monotonic.dart`), never `clock.stopwatch()` directly. `package:clock`'s stopwatch follows `clock.now()`, the device wall clock, so a user changing device time would move the anchor.
-- **Device clock**: `clock.now()` is used only before the first sample and for `deviceSkew`. Never for `now` once synced.
+- **Valid time or no time**: `now` is the server time or null. Never fall back to the device clock; any doubt (no sample, monotonic clock unreadable or going backwards, `invalidate()` without sleep counting) means null.
+- **Monotonic time**: always go through `MonotonicSource` (`lib/src/monotonic.dart`); the interceptor times round trips on the clock's own source (`monotonicSourceOf`). Never use `clock.stopwatch()`: `package:clock`'s stopwatch follows `clock.now()`, the device wall clock, which the user can change.
+- **Boot clock (FFI)** (`monotonic_ffi.dart`): Android/Linux `clock_gettime(CLOCK_BOOTTIME=7)` with a `struct timespec` of two `Long`s (32-bit on 32-bit Android); iOS/macOS `clock_gettime_nsec_np(CLOCK_MONOTONIC=6)`, which counts sleep per Apple's man page (`CLOCK_UPTIME_RAW` doesn't). Any lookup failure or bad first reading falls back to `StopwatchSource` (`countsSleep` false). A wrong FFI signature can crash the process, so change these only with tests on real devices. `monotonic_stub.dart` is used where `dart:ffi` is missing (web).
+- **Device clock**: `clock.now()` is used only for `deviceSkew` and the RFC 850 century fix. Never for `now`.
+- **Sample choice**: newest acceptable sample wins; more than `tolerance` ahead replaces at once; more than `tolerance` behind is rejected unless `behindSamplesToAccept` (3) agree on offset and span more than 2 x `tolerance` (rules out a repeated cached copy).
+- **Request filters**: `allow`/`deny` entries are parsed once in the constructor by `UrlRule` (`lib/src/url_rule.dart`, not exported); invalid entries throw `ArgumentError` there, the only place the interceptor throws. Paths match at `/` boundaries; deny wins; `allow: []` samples nothing.
+- **Cache verdict**: `cacheVerdict` runs before the default check (`304` + `isCacheHit`); `useDefault` falls through to it, so apps can't drop it by accident. A throwing callback counts as `cached`.
+- **Shared clock**: `ServerClock.instance` is created lazily with the default settings; `ServerClockInterceptor()` feeds it when `serverClock` is null. `dispose()` is a no-op on it. Its monotonic source is resolved on first use, so tests that need a `FakeSource` use their own instances; shared-clock tests live in `test/shared_clock_test.dart` (a fresh isolate).
 - **Never throw from the interceptor** and never change requests or responses (other than removing its own `extra` key). Wrap user callbacks in try/catch.
 - **Dio compatibility**: the pubspec allows Dio `>=4.0.0 <6.0.0`. Don't use Dio 5-only APIs in `lib/` (`DioException`, `Headers.value` is fine but throws on repeated headers, so use `headers[name]`). `onError`'s parameter type is left to inference so it works with `DioError` and `DioException`.
 - **Cache detection**: a `Cache-Status` header alone is not a hit (`dio_cache_plus` adds `fwd=...` to every network response); only a `hit` parameter is. `Age: 0` alone is not a hit.
 - **HTTP dates**: `parseHttpDate` reads RFC 850 two-digit years as 19xx; `addHttpDate` corrects them per RFC 9110.
-- **No app-specific details**: no real endpoints, hostnames or company names in the package, tests, example or README.
+- **No app-specific details**: no endpoints, hostnames or names from apps that use this package. The example app uses only `https://www.google.com/generate_204`, which is never cached. Never a cacheable endpoint: api.github.com's root is `public, max-age=60` and served an 8 s old `Date` without `Age`.
 - **Public API**: everything exported from `lib/dio_server_clock.dart` is public. Don't remove or rename anything without a major version bump.
 
 ## Known limitations (intentional or deferred)
-- After deep sleep, `now` lags by the sleep time until the next accepted sample; `invalidate()` only makes that sample replace the anchor.
+- Where sleep isn't counted (web, Windows), `now` is null after `invalidate()` until the next sample; without an `invalidate()` call on resume it would lag by the sleep time.
+- Sleep counting was verified by hand on real devices with the example app (2026-Oct-31): a vivo phone on Android 16 (64-bit, 30 min unplugged) and an iPhone 11 on iOS 27.0.1 (31 min unplugged, and 15 min in Low Power Mode), each within 1 s of the server. There is no automated device test, and 32-bit Android is untested.
+- A cached response without `Age` or cache headers (seen on public, `max-age` responses) can't be detected; sample only private, per-user APIs. The `tolerance` rule rejects such a sample once the clock has a newer time.
 - The round trip includes body download and other interceptors' response work.
 - A server or CDN with a wrong clock can't be detected.
 
 ## CI
-- `.github/workflows/ci.yml` runs on every PR and push to `main`: `verify` (format, `dart analyze --fatal-infos`, tests, publish dry run on Dart 3.9.2) and `compat` (the minimum Dart SDK 3.7.2, and Dio 4.0.0 via `pubspec_overrides.yaml`).
+- `.github/workflows/ci.yml` runs on every PR and push to `main`: `verify` (format `lib` and `test`, `dart analyze --fatal-infos`, tests, publish dry run on Dart 3.9.2) and `compat` (the minimum Dart SDK 3.7.2, and Dio 4.0.0 via `pubspec_overrides.yaml`), plus `example` (format and `flutter analyze` in `example/` on Flutter 3.35.6). The Dart-only jobs run `dart pub get --no-example`.
 - Keep the SDK versions in `ci.yml` and `publish.yml` in sync; raise the `compat` SDK if the pubspec's minimum SDK changes.
 
 ## Releases

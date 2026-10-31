@@ -4,3 +4,7 @@ analyzer:
   language:
     strict-casts: true
     strict-raw-types: true
+  # The example is a Flutter app with its own pubspec, analyzed by the
+  # `example` CI job with `flutter analyze`.
+  exclude:
+    - example/**
