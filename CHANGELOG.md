@@ -17,6 +17,7 @@ Breaking release: the clock now gives a valid time or no time.
 - The time runs on the platform boot clock, which keeps counting through deep sleep: `CLOCK_BOOTTIME` on Android and Linux, `CLOCK_MONOTONIC` on iOS and macOS, through `dart:ffi`. Web, Windows and any failure fall back to `Stopwatch`. `countsSleep` reports which is in use
 - `tolerance` (default 5 s): a response more than this ahead replaces a stale time at once; one more than this behind (a cached copy) is ignored, unless three in a row agree, meaning the server's clock moved back
 - `onSyncChanged`: a `Stream<bool>` that fires when the time is gained or lost
+- The example is now a Flutter test app for Android and iOS, with a deep-sleep check
 
 ### Migration from 0.1.0
 - Handle null wherever you read the time: `final now = serverClock.now; if (now == null) { /* unknown: show "syncing…" */ }`. Don't replace null with `DateTime.now()` in decisions

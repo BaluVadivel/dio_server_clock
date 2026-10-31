@@ -36,6 +36,27 @@ jobs:
       - name: Publish dry run
         run: dart pub publish --dry-run
 
+  # The example is a Flutter test app (Android, iOS), excluded from the root
+  # analysis.
+  example:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: example
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: 3.35.6
+          cache: true
+
+      - run: flutter pub get
+
+      - run: flutter analyze --fatal-infos
+
   # The pubspec promises Dart ^3.7.2 and Dio >=4.0.0 <6.0.0; check both ends.
   compat:
     name: compat (${{ matrix.name }})

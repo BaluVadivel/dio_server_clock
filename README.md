@@ -178,6 +178,10 @@ Browsers hide the `Date` header on cross-origin requests. The server must send `
 
 Nothing runs in the background: no timers, threads or wake-ups, so there is no idle cost. Reading `now` is one monotonic clock read (tens of nanoseconds); each sampled response adds one header parse (about a microsecond). It's safe to read `now` in `build()`.
 
+## Example app
+
+[`example/`](example/) is a Flutter test app for Android and iOS: it shows the server time, device skew and an event log, and has a **Check** button for testing deep sleep on a real device. See [example/README.md](example/README.md).
+
 ## FAQ
 
 **Why not NTP?** NTP needs UDP access to a time server, which some networks block, and it gives the time of a third party rather than your server. This package needs nothing beyond the requests you already make.

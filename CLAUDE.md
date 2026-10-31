@@ -6,6 +6,7 @@ Pure Dart package: server-anchored time for Dio apps from the HTTP `Date` header
 - `dart test`: unit tests (clock tests drive a `FakeSource` monotonic clock via `monotonicSourceOverride`; interceptor tests use a fake `HttpClientAdapter`). The platform-source tests check the real boot clock on macOS/Linux
 - `dart analyze`: must report no issues
 - `dart format lib test example`
+- Example app (`example/`, Flutter, Android and iOS only): `cd example && flutter pub get && flutter analyze`. It's excluded from the root `dart analyze` because it needs Flutter
 - `dart pub publish --dry-run`: must report 0 warnings before a release
 - Dio 4 check: create `pubspec_overrides.yaml` with `dependency_overrides: {dio: 4.0.0}`, run `dart pub get && dart analyze && dart test`, then delete it
 
@@ -19,7 +20,7 @@ Pure Dart package: server-anchored time for Dio apps from the HTTP `Date` header
 - **Dio compatibility**: the pubspec allows Dio `>=4.0.0 <6.0.0`. Don't use Dio 5-only APIs in `lib/` (`DioException`, `Headers.value` is fine but throws on repeated headers, so use `headers[name]`). `onError`'s parameter type is left to inference so it works with `DioError` and `DioException`.
 - **Cache detection**: a `Cache-Status` header alone is not a hit (`dio_cache_plus` adds `fwd=...` to every network response); only a `hit` parameter is. `Age: 0` alone is not a hit.
 - **HTTP dates**: `parseHttpDate` reads RFC 850 two-digit years as 19xx; `addHttpDate` corrects them per RFC 9110.
-- **No app-specific details**: no endpoints, hostnames or names from apps that use this package. The example uses a public, never-cached endpoint (`google.com/generate_204`); never a cacheable one (api.github.com's root is `public, max-age=60` and served an 8 s old `Date` without `Age`).
+- **No app-specific details**: no endpoints, hostnames or names from apps that use this package. The example app uses only `https://www.google.com/generate_204`, which is never cached. Never a cacheable endpoint: api.github.com's root is `public, max-age=60` and served an 8 s old `Date` without `Age`.
 - **Public API**: everything exported from `lib/dio_server_clock.dart` is public. Don't remove or rename anything without a major version bump.
 
 ## Known limitations (intentional or deferred)
@@ -30,7 +31,7 @@ Pure Dart package: server-anchored time for Dio apps from the HTTP `Date` header
 - A server or CDN with a wrong clock can't be detected.
 
 ## CI
-- `.github/workflows/ci.yml` runs on every PR and push to `main`: `verify` (format, `dart analyze --fatal-infos`, tests, publish dry run on Dart 3.9.2) and `compat` (the minimum Dart SDK 3.7.2, and Dio 4.0.0 via `pubspec_overrides.yaml`).
+- `.github/workflows/ci.yml` runs on every PR and push to `main`: `verify` (format, `dart analyze --fatal-infos`, tests, publish dry run on Dart 3.9.2) and `compat` (the minimum Dart SDK 3.7.2, and Dio 4.0.0 via `pubspec_overrides.yaml`), plus `example` (`flutter analyze` in `example/` on Flutter 3.35.6).
 - Keep the SDK versions in `ci.yml` and `publish.yml` in sync; raise the `compat` SDK if the pubspec's minimum SDK changes.
 
 ## Releases
