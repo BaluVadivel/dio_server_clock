@@ -1,6 +1,11 @@
 # dio_server_clock
 
 [![pub package](https://img.shields.io/pub/v/dio_server_clock.svg)](https://pub.dev/packages/dio_server_clock)
+[![pub points](https://img.shields.io/pub/points/dio_server_clock)](https://pub.dev/packages/dio_server_clock/score)
+[![likes](https://img.shields.io/pub/likes/dio_server_clock)](https://pub.dev/packages/dio_server_clock/score)
+[![downloads](https://img.shields.io/pub/dm/dio_server_clock)](https://pub.dev/packages/dio_server_clock/score)
+[![CI](https://github.com/BaluVadivel/dio_server_clock/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BaluVadivel/dio_server_clock/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/github/license/BaluVadivel/dio_server_clock)](https://github.com/BaluVadivel/dio_server_clock/blob/main/LICENSE)
 
 Tamper-resistant server time for [Dio](https://pub.dev/packages/dio) apps. Reads the HTTP `Date` header from responses you already make and anchors it to a monotonic clock, so device time and timezone changes have no effect.
 
