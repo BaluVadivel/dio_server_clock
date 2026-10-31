@@ -99,8 +99,12 @@ class _ClockPageState extends State<ClockPage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused) {
-      _pausedServer = _clock.now;
-      _pausedDevice = DateTime.now();
+      // Android can report paused again (screen on, lock screen) before
+      // resumed; keep the first one so "away" covers the whole time.
+      if (_pausedDevice == null) {
+        _pausedServer = _clock.now;
+        _pausedDevice = DateTime.now();
+      }
       _addLog('Paused');
     } else if (state == AppLifecycleState.resumed) {
       _clock.invalidate();
@@ -208,6 +212,8 @@ class _ClockPageState extends State<ClockPage> with WidgetsBindingObserver {
     // Requests can finish after the page is gone.
     if (!mounted) return;
     final stamp = _time(_clock.nowIn(_ist));
+    // Also in the device log (adb logcat, flutter run), for scripted tests.
+    debugPrint('DSC $stamp  $message');
     setState(() {
       _log.insert(0, '$stamp  $message');
       if (_log.length > 200) _log.removeLast();
