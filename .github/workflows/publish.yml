@@ -1,4 +1,6 @@
 name: Publish to pub.dev
+# Title each run by its tag (Publish v0.3.0) instead of the commit message.
+run-name: Publish ${{ github.ref_name }}
 
 # Only a pushed version tag (e.g. v0.2.0) starts a release. pub.dev also
 # checks the repository and tag pattern configured in its admin settings.
