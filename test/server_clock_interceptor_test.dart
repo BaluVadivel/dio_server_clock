@@ -2,7 +2,10 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:dio_server_clock/dio_server_clock.dart';
+import 'package:dio_server_clock/src/monotonic.dart';
 import 'package:test/test.dart';
+
+import 'fake_source.dart';
 
 const _date = 'Fri, 30 Oct 2026 20:00:00 GMT';
 final _server = DateTime.utc(2026, 10, 30, 20);
@@ -13,12 +16,14 @@ class _FakeAdapter implements HttpClientAdapter {
     this.status = 200,
     this.delay,
     this.fail = false,
+    this.onFetch,
   });
 
   final Map<String, List<String>> headers;
   final int status;
   final Duration? delay;
   final bool fail;
+  final void Function()? onFetch;
   int calls = 0;
 
   // `Future<dynamic>?` matches both Dio 4 (`Future?`) and Dio 5
@@ -30,6 +35,7 @@ class _FakeAdapter implements HttpClientAdapter {
     Future<dynamic>? cancelFuture,
   ) async {
     calls++;
+    onFetch?.call();
     if (delay != null) await Future<void>.delayed(delay!);
     if (fail) throw StateError('connection failed');
     return ResponseBody.fromString('{}', status, headers: headers);
@@ -92,7 +98,7 @@ void main() {
       final c = ServerClock();
       await _dio(c).get<dynamic>('/v1/positions');
       expect(c.isSynced, isTrue);
-      final skew = c.now.difference(_server);
+      final skew = c.now!.difference(_server);
       // Half a second for the Date window plus half a tiny round trip.
       expect(skew, greaterThanOrEqualTo(const Duration(milliseconds: 500)));
       expect(skew, lessThan(const Duration(seconds: 2)));
@@ -338,5 +344,48 @@ void main() {
     await dio.fetch<dynamic>(first.requestOptions);
     expect(adapter.calls, 2);
     expect(c.isSynced, isTrue);
+  });
+
+  group('round trip on the clock\'s monotonic source', () {
+    late FakeSource source;
+    setUp(() => monotonicSourceOverride = source = FakeSource());
+    tearDown(() => monotonicSourceOverride = null);
+
+    Future<ServerClock> request(Duration networkTime) async {
+      final c = ServerClock();
+      final dio =
+          Dio(BaseOptions(baseUrl: 'https://api.example.com'))
+            ..httpClientAdapter = _FakeAdapter(const {
+              'date': [_date],
+            }, onFetch: () => source.advance(networkTime))
+            ..interceptors.add(ServerClockInterceptor(c));
+      await dio.get<dynamic>('/v1/positions');
+      return c;
+    }
+
+    test('is measured and corrected for', () async {
+      final c = await request(const Duration(seconds: 3));
+      // Half the round trip plus half the Date window.
+      expect(c.uncertainty, const Duration(seconds: 2));
+      expect(c.now, _server.add(const Duration(seconds: 2)));
+    });
+
+    test('over the limit is rejected', () async {
+      final c = await request(const Duration(seconds: 11));
+      expect(c.now, isNull);
+    });
+
+    test('a monotonic clock that fails mid-request is skipped', () async {
+      final c = ServerClock();
+      final dio =
+          Dio(BaseOptions(baseUrl: 'https://api.example.com'))
+            ..httpClientAdapter = _FakeAdapter(const {
+              'date': [_date],
+            }, onFetch: () => source.micros = null)
+            ..interceptors.add(ServerClockInterceptor(c));
+      final response = await dio.get<dynamic>('/v1/positions');
+      expect(response.statusCode, 200);
+      expect(c.now, isNull);
+    });
   });
 }

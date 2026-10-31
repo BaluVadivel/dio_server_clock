@@ -1,7 +1,6 @@
 import 'package:dio/dio.dart';
 
 import 'cache_detection.dart';
-import 'monotonic.dart';
 import 'server_clock.dart';
 
 /// Feeds a [ServerClock] from the `Date` header of Dio responses.
@@ -36,16 +35,21 @@ class ServerClockInterceptor extends Interceptor {
   /// Header-based cache hits are always detected.
   final bool Function(Response<dynamic> response)? isFromCache;
 
-  static const _stopwatchKey = 'dio_server_clock.stopwatch';
+  static const _startKey = 'dio_server_clock.start';
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
     try {
-      // Runs on every attempt, so a retried request restarts its stopwatch.
-      if (_shouldSample(options)) {
-        options.extra[_stopwatchKey] = startMonotonicStopwatch();
+      // Runs on every attempt, so a retried request is timed from its resend.
+      // The start time, on the clock's own monotonic source.
+      final start =
+          _shouldSample(options)
+              ? monotonicSourceOf(serverClock).nowMicros()
+              : null;
+      if (start != null) {
+        options.extra[_startKey] = start;
       } else {
-        options.extra.remove(_stopwatchKey);
+        options.extra.remove(_startKey);
       }
     } catch (_) {
       // A throwing filter must not break the request.
@@ -82,9 +86,11 @@ class ServerClockInterceptor extends Interceptor {
 
   void _sample(RequestOptions options, Response<dynamic>? response) {
     try {
-      final stopwatch = options.extra.remove(_stopwatchKey);
-      if (stopwatch is! Stopwatch || response == null) return;
-      final roundTrip = stopwatch.elapsed;
+      final start = options.extra.remove(_startKey);
+      if (start is! int || response == null) return;
+      final end = monotonicSourceOf(serverClock).nowMicros();
+      if (end == null || end < start) return;
+      final roundTrip = Duration(microseconds: end - start);
 
       if (response.statusCode == 304) return;
       final headers = response.headers;

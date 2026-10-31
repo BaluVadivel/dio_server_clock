@@ -4,6 +4,25 @@ All notable changes to dio_server_clock will be documented in this file.
 
 ## [Unreleased]
 
+Breaking release: the clock now gives a valid time or no time.
+
+### Breaking
+- `now` and `nowIn` return `DateTime?`: null before the first accepted response, after `reset()`, and after `invalidate()` where sleep isn't counted. They no longer fall back to the device clock
+- `isSynced`, `deviceSkew` and `uncertainty` follow `now`: false or null whenever `now` is null
+- `maxAnchorAge` is removed; the newest acceptable response now wins
+- `invalidate()` clears the time where the clock may pause in deep sleep (web, Windows); on Android, iOS, macOS and Linux it keeps the time
+- `onAnchor` fires for every accepted response
+
+### Added
+- The time runs on the platform boot clock, which keeps counting through deep sleep: `CLOCK_BOOTTIME` on Android and Linux, `CLOCK_MONOTONIC` on iOS and macOS, through `dart:ffi`. Web, Windows and any failure fall back to `Stopwatch`. `countsSleep` reports which is in use
+- `tolerance` (default 5 s): a response more than this ahead replaces a stale time at once; one more than this behind (a cached copy) is ignored, unless three in a row agree, meaning the server's clock moved back
+- `onSyncChanged`: a `Stream<bool>` that fires when the time is gained or lost
+
+### Migration from 0.1.0
+- Handle null wherever you read the time: `final now = serverClock.now; if (now == null) { /* unknown: show "syncing…" */ }`. Don't replace null with `DateTime.now()` in decisions
+- Remove `maxAnchorAge:` from `ServerClock(...)`
+- Keep calling `invalidate()` on app resume
+
 ## [0.1.0] - 2026-Oct-31
 
 ### Added

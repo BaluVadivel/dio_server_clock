@@ -6,94 +6,124 @@ import 'package:http_parser/http_parser.dart' show parseHttpDate;
 import 'clock_sample.dart';
 import 'monotonic.dart';
 
-/// A clock anchored to server time.
+/// A clock anchored to server time: it gives a valid time or no time.
 ///
 /// Feed it samples (usually through `ServerClockInterceptor`) and read the
-/// time from [now] or [nowIn]. After the first accepted sample, the device
-/// clock and device timezone are no longer used for [now].
+/// time from [now] or [nowIn]. [now] is null until a sample is accepted, and
+/// whenever the time can't be trusted. The device clock and timezone are
+/// never used.
 class ServerClock {
-  /// Creates a clock with no anchor; [now] uses the device clock until the
-  /// first sample is accepted.
+  /// Creates a clock with no time; [now] is null until the first sample.
   ///
-  /// Throws an [ArgumentError] if a limit is negative.
+  /// Throws an [ArgumentError] if a duration is negative.
   ServerClock({
     this.maxRoundTrip = const Duration(seconds: 2),
     this.maxRoundTripBeforeSync = const Duration(seconds: 10),
-    this.maxAnchorAge = const Duration(minutes: 5),
-  }) {
-    if (maxRoundTrip.isNegative) {
-      throw ArgumentError.value(maxRoundTrip, 'maxRoundTrip', 'is negative');
-    }
-    if (maxRoundTripBeforeSync.isNegative) {
-      throw ArgumentError.value(
-        maxRoundTripBeforeSync,
-        'maxRoundTripBeforeSync',
-        'is negative',
-      );
-    }
-    if (maxAnchorAge.isNegative) {
-      throw ArgumentError.value(maxAnchorAge, 'maxAnchorAge', 'is negative');
-    }
+    this.tolerance = const Duration(seconds: 5),
+  }) : _source = resolveMonotonicSource() {
+    _checkNotNegative(maxRoundTrip, 'maxRoundTrip');
+    _checkNotNegative(maxRoundTripBeforeSync, 'maxRoundTripBeforeSync');
+    _checkNotNegative(tolerance, 'tolerance');
   }
 
-  /// Samples slower than this are ignored once the clock is synced.
+  static void _checkNotNegative(Duration value, String name) {
+    if (value.isNegative) throw ArgumentError.value(value, name, 'is negative');
+  }
+
+  /// Samples slower than this are ignored while the clock has a time.
   final Duration maxRoundTrip;
 
-  /// Looser limit used until a sample is accepted, both before the first
-  /// sync and after [invalidate], so a slow network still gets an anchor.
+  /// Looser limit used while the clock has no time, so a slow network still
+  /// gets one.
   final Duration maxRoundTripBeforeSync;
 
-  /// After this long, any acceptable sample replaces the anchor even if it is
-  /// less precise than the current one.
-  final Duration maxAnchorAge;
+  /// How far a sample may disagree with [now] before it counts as ahead or
+  /// behind.
+  ///
+  /// A sample more than this ahead means the current time was stale, so it
+  /// replaces it. A sample more than this behind is probably a cached copy,
+  /// so it is ignored, unless [behindSamplesToAccept] samples in a row agree
+  /// with each other (the server's clock really moved back).
+  final Duration tolerance;
+
+  /// Behind samples that must agree before the clock follows them.
+  static const int behindSamplesToAccept = 3;
 
   /// Resolution of the HTTP `Date` header.
   static const Duration httpDateResolution = Duration(seconds: 1);
 
-  int? _anchorUtcMs;
+  final MonotonicSource _source;
+
+  // Server time and monotonic reading at the anchor, in microseconds.
+  int? _anchorServerMicros;
+  int _anchorMonoMicros = 0;
   Duration? _anchorUncertainty;
-  Stopwatch? _monotonic;
-  bool _replaceNext = false;
+
+  // Recent samples behind [now], as (server micros, monotonic micros).
+  final List<(int, int)> _behind = [];
+
   final _anchors = StreamController<ClockSample>.broadcast();
+  final _syncChanges = StreamController<bool>.broadcast();
 
-  /// Whether a sample has been accepted since creation or the last [reset].
-  bool get isSynced => _anchorUtcMs != null;
+  /// Whether the clock has a valid time: the same as `now != null`.
+  bool get isSynced => now != null;
 
-  /// Fires every time a new anchor is set.
+  /// Fires every time a sample is accepted.
   Stream<ClockSample> get onAnchor => _anchors.stream;
 
-  /// Current server time in UTC.
+  /// Fires true when the clock gets a time and false when it loses it
+  /// ([reset], or [invalidate] where sleep isn't counted).
+  Stream<bool> get onSyncChanged => _syncChanges.stream;
+
+  /// Current server time in UTC, or null when there is no valid time.
   ///
-  /// Before the first sample this falls back to the device clock; check
-  /// [isSynced] if that matters for your use case.
-  DateTime get now {
-    final anchor = _anchorUtcMs;
-    if (anchor == null) return clock.now().toUtc();
-    return DateTime.fromMillisecondsSinceEpoch(
-      anchor + _monotonic!.elapsedMilliseconds,
-      isUtc: true,
-    );
+  /// Null before the first accepted sample, after [reset], and after
+  /// [invalidate] on platforms whose clock may pause in deep sleep, until the
+  /// next sample. Treat null as "unknown"; don't replace it with
+  /// `DateTime.now()` in decisions.
+  DateTime? get now {
+    final micros = _nowMicros();
+    return micros == null
+        ? null
+        : DateTime.fromMicrosecondsSinceEpoch(micros, isUtc: true);
   }
 
-  /// Wall-clock fields at a fixed UTC offset (for IST: 5 h 30 min).
+  int? _nowMicros() {
+    final anchor = _anchorServerMicros;
+    if (anchor == null) return null;
+    final mono = _source.nowMicros();
+    if (mono == null) return null;
+    final elapsed = mono - _anchorMonoMicros;
+    // A monotonic clock going backwards means it can't be trusted.
+    if (elapsed < 0) return null;
+    return anchor + elapsed;
+  }
+
+  /// Wall-clock fields at a fixed UTC offset (for IST: 5 h 30 min), or null
+  /// when [now] is null.
   ///
   /// The returned value is still flagged UTC. Read its fields (hour, minute,
   /// weekday) or format it; never store it, send it, or call `toLocal()`.
-  DateTime nowIn(Duration utcOffset) => now.add(utcOffset);
+  DateTime? nowIn(Duration utcOffset) => now?.add(utcOffset);
 
-  /// Server time minus device time, or null before the first sample.
+  /// Server time minus device time, or null when [now] is null.
   /// Positive means the device clock is behind.
-  Duration? get deviceSkew => isSynced ? now.difference(clock.now()) : null;
+  Duration? get deviceSkew => now?.difference(clock.now());
 
-  /// Worst-case error of [now] at the moment the anchor was set: half the
-  /// round trip plus half the resolution of the sample. Null before the first
-  /// sample.
-  Duration? get uncertainty => _anchorUncertainty;
+  /// Worst-case error of [now] when the current sample was accepted: half the
+  /// round trip plus half the sample's resolution. Null when [now] is null.
+  Duration? get uncertainty => isSynced ? _anchorUncertainty : null;
+
+  /// Whether the clock keeps counting while the device is in deep sleep.
+  ///
+  /// True on Android, iOS, macOS and Linux (the platform boot clock); false
+  /// on web and Windows, where [invalidate] clears the time.
+  bool get countsSleep => _source.countsSleep;
 
   /// Adds a sample from a raw HTTP `Date` header value.
   ///
-  /// Returns true if it became the new anchor; false if the header is not a
-  /// valid HTTP date or the sample was rejected.
+  /// Returns true if it was accepted; false if the header is not a valid HTTP
+  /// date or the sample was rejected.
   bool addHttpDate(String dateHeader, Duration roundTrip) {
     final value = dateHeader.trim();
     DateTime serverTime;
@@ -133,7 +163,10 @@ class ServerClock {
   ///
   /// [serverTime] is the time the server stamped on the response, truncated
   /// to [resolution] (one second for the HTTP `Date` header); [roundTrip] is
-  /// how long the request took. Returns true if it became the new anchor.
+  /// how long the request took. Returns true if it was accepted.
+  ///
+  /// The newest acceptable sample becomes the time, except one more than
+  /// [tolerance] behind [now] (see [tolerance]).
   bool addSample(
     DateTime serverTime,
     Duration roundTrip, {
@@ -141,56 +174,100 @@ class ServerClock {
   }) {
     if (roundTrip.isNegative || resolution.isNegative) return false;
 
-    final current = _anchorUncertainty;
-    final mustReplace = current == null || _replaceNext;
-    final limit = mustReplace ? maxRoundTripBeforeSync : maxRoundTrip;
-    if (roundTrip > limit) return false;
+    final mono = _source.nowMicros();
+    if (mono == null) return false;
 
-    final uncertainty = roundTrip ~/ 2 + resolution ~/ 2;
-    final anchorOld = _monotonic != null && _monotonic!.elapsed > maxAnchorAge;
-    if (!mustReplace && !anchorOld && uncertainty >= current) return false;
+    final current = _nowMicros();
+    final limit = current == null ? maxRoundTripBeforeSync : maxRoundTrip;
+    if (roundTrip > limit) return false;
 
     // The server stamped the time somewhere in the round trip, and anywhere
     // in the resolution window; take the middle of both.
-    _anchorUtcMs =
-        serverTime.millisecondsSinceEpoch +
-        resolution.inMilliseconds ~/ 2 +
-        roundTrip.inMilliseconds ~/ 2;
-    _anchorUncertainty = uncertainty;
-    _monotonic = startMonotonicStopwatch();
-    _replaceNext = false;
+    final estimate =
+        serverTime.microsecondsSinceEpoch +
+        resolution.inMicroseconds ~/ 2 +
+        roundTrip.inMicroseconds ~/ 2;
 
+    if (current != null &&
+        estimate < current - tolerance.inMicroseconds &&
+        !_confirmsBehind(estimate, mono)) {
+      return false;
+    }
+
+    _behind.clear();
+    _anchorServerMicros = estimate;
+    _anchorMonoMicros = mono;
+    _anchorUncertainty = roundTrip ~/ 2 + resolution ~/ 2;
+
+    if (current == null) _emitSync(true);
     if (!_anchors.isClosed) {
       _anchors.add(
         ClockSample(
-          serverTime: now,
+          serverTime: DateTime.fromMicrosecondsSinceEpoch(
+            estimate,
+            isUtc: true,
+          ),
           roundTrip: roundTrip,
-          uncertainty: uncertainty,
-          deviceSkew: deviceSkew!,
+          uncertainty: _anchorUncertainty!,
+          deviceSkew: Duration(
+            microseconds: estimate - clock.now().microsecondsSinceEpoch,
+          ),
         ),
       );
     }
     return true;
   }
 
-  /// Makes the next acceptable sample replace the anchor, using the looser
-  /// [maxRoundTripBeforeSync] limit.
+  /// Records a behind sample; true once [behindSamplesToAccept] in a row agree
+  /// on the server time and span more than twice [tolerance].
   ///
-  /// Call when the app resumes: the monotonic clock may pause while the
-  /// device is in deep sleep, so [now] can be behind until the next sample.
-  /// [now] keeps running from the current anchor until then.
+  /// The span check rules out a cached copy: its `Date` doesn't advance, so
+  /// copies read [tolerance] or more apart disagree.
+  bool _confirmsBehind(int estimate, int mono) {
+    _behind.add((estimate, mono));
+    if (_behind.length > behindSamplesToAccept) _behind.removeAt(0);
+    if (_behind.length < behindSamplesToAccept) return false;
+
+    final (firstServer, firstMono) = _behind.first;
+    final offset = firstServer - firstMono;
+    final agree = _behind.every(
+      (s) => (s.$1 - s.$2 - offset).abs() <= tolerance.inMicroseconds,
+    );
+    final span = _behind.last.$2 - firstMono;
+    return agree && span > 2 * tolerance.inMicroseconds;
+  }
+
+  /// Call when the app resumes.
+  ///
+  /// Where the clock counts deep sleep ([countsSleep]), the time stays valid
+  /// and this does nothing. Elsewhere the clock may have paused while the
+  /// device slept, so the time is cleared until the next sample.
   void invalidate() {
-    if (isSynced) _replaceNext = true;
+    if (!_source.countsSleep) reset();
   }
 
-  /// Forgets the anchor entirely; [now] falls back to the device clock.
+  /// Forgets the time; [now] is null until the next sample.
   void reset() {
-    _anchorUtcMs = null;
+    final hadTime = _nowMicros() != null;
+    _anchorServerMicros = null;
     _anchorUncertainty = null;
-    _monotonic = null;
-    _replaceNext = false;
+    _behind.clear();
+    if (hadTime) _emitSync(false);
   }
 
-  /// Closes the [onAnchor] stream. The clock keeps working afterwards.
-  Future<void> dispose() => _anchors.close();
+  void _emitSync(bool synced) {
+    if (!_syncChanges.isClosed) _syncChanges.add(synced);
+  }
+
+  /// Closes [onAnchor] and [onSyncChanged]. The clock keeps working
+  /// afterwards.
+  Future<void> dispose() async {
+    await _anchors.close();
+    await _syncChanges.close();
+  }
 }
+
+/// The monotonic source a [ServerClock] uses, so the interceptor measures
+/// round trips on the same clock. Not exported.
+MonotonicSource monotonicSourceOf(ServerClock serverClock) =>
+    serverClock._source;

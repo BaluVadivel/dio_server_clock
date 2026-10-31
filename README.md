@@ -4,8 +4,9 @@
 
 Tamper-resistant server time for [Dio](https://pub.dev/packages/dio) apps. Reads the HTTP `Date` header from responses you already make and anchors it to a monotonic clock, so device time and timezone changes have no effect.
 
+- **Valid time or no time:** `now` is the server time, or null when it can't be trusted. Never the device clock
 - No extra requests and no backend changes
-- Ignores the device clock and timezone once synced
+- Keeps counting through deep sleep on Android and iOS
 - Corrects for network delay and skips cached responses
 - Pure Dart: works in Flutter, CLI and server apps, on Dio 4 and 5
 
@@ -20,17 +21,17 @@ Every HTTP response carries a `Date` header. The HTTP standard (RFC 9110) requir
 ```mermaid
 flowchart LR
     A["Response arrives<br/>Date header + round trip"] --> B["Filter the sample<br/>allowed path, not cached, fast enough"]
-    B --> C["Set the anchor<br/>server time + round trip / 2<br/>monotonic stopwatch restarts"]
-    C --> D["Read the time<br/>anchor + stopwatch elapsed"]
+    B --> C["Set the anchor<br/>server time + round trip / 2<br/>monotonic reading saved"]
+    C --> D["Read the time<br/>anchor + monotonic time since"]
 ```
 
-The stopwatch reads the OS monotonic clock, which ignores device time and timezone changes, so the time stays correct between samples. The most precise sample (shortest round trip) is kept, and refreshed after five minutes.
+The monotonic clock only moves forward and ignores device time and timezone changes, so the time stays correct between samples. Each accepted response replaces the anchor, so the time is as fresh as your latest API call.
 
 ## Quick start
 
 ```yaml
 dependencies:
-  dio_server_clock: ^0.1.0
+  dio_server_clock: ^0.2.0
 ```
 
 ```dart
@@ -40,12 +41,31 @@ final serverClock = ServerClock(); // one per backend, app-wide
 
 dio.interceptors.add(ServerClockInterceptor(serverClock)); // add it last
 
-serverClock.now;                                       // server time, UTC
-serverClock.nowIn(const Duration(hours: 5, minutes: 30)); // fields at UTC+5:30
-serverClock.isSynced;                                  // false until the first sample
+final now = serverClock.now; // DateTime? in UTC; null = no valid time yet
+if (now == null) {
+  // Show "syncing…" or a neutral state; don't guess.
+}
 ```
 
-Before the first accepted sample, `now` falls back to the device clock. Check `isSynced` where that matters.
+## Valid time or no time
+
+`now` returns the server time to within about a second, or **null**. It never falls back to the device clock.
+
+| Situation | `now` |
+| --- | --- |
+| Before the first accepted response (cold start, offline at launch) | null |
+| After `reset()` | null |
+| After `invalidate()` where the clock may pause in deep sleep (web, Windows) | null until the next response |
+| Otherwise, including after deep sleep on Android and iOS | Server time |
+
+Rules for apps:
+
+- Treat null as **unknown**. Show "syncing…", hide the time-dependent label, or show a neutral state.
+- Never replace null with `DateTime.now()` in decision logic. If you need device time for something else (animations, logs), call `DateTime.now()` there directly.
+- Use `onSyncChanged` (a `Stream<bool>`) to update the UI when the time arrives or is lost.
+- The server stays the final authority: enforce anything that matters there.
+
+What the package can't detect: a server or CDN whose own clock is wrong, and a `Date` header rewritten in transit (for example by a proxy on a rooted device).
 
 ## Choosing which requests to sample
 
@@ -60,6 +80,13 @@ ServerClockInterceptor(
 ```
 
 Login is a good first sample: it is never cached and happens before any screen that needs the time.
+
+## How samples are chosen
+
+- The **newest** acceptable response wins.
+- A response slower than `maxRoundTrip` (2 s) is ignored; without a valid time the limit is `maxRoundTripBeforeSync` (10 s), so a slow network still gets one.
+- A response more than `tolerance` (5 s) **ahead** of `now` means the current time was stale: it replaces it at once.
+- A response more than `tolerance` **behind** `now` is probably a cached copy: it is ignored. If three in a row agree with each other over more than twice `tolerance`, the server's clock really moved back, and the clock follows it. A cached copy can't do that, because its `Date` doesn't advance.
 
 ## Cached responses
 
@@ -89,9 +116,17 @@ ServerClockInterceptor(
 
 The round trip is measured from this interceptor's `onRequest` to its `onResponse`. Adding it last keeps slow request work in other interceptors (token refresh, reading secure storage) out of the measurement.
 
-## Lifecycle (Flutter)
+## Sleep and app lifecycle
 
-The monotonic clock can pause while the device is in deep sleep, so after a long sleep `now` can be behind until the next response. Call `invalidate()` when the app resumes so the next response replaces the anchor:
+The time runs on the platform's boot clock, which keeps counting through deep sleep and can't be changed by the user:
+
+| Platform | Clock | Counts deep sleep |
+| --- | --- | --- |
+| Android, Linux | `clock_gettime(CLOCK_BOOTTIME)` | Yes |
+| iOS, macOS | `clock_gettime_nsec_np(CLOCK_MONOTONIC)` | Yes |
+| Web, Windows, or if the boot clock fails | `Stopwatch` | No |
+
+`countsSleep` tells you which one is in use. Call `invalidate()` when the app resumes: with a boot clock it does nothing, and without one it clears the time until the next response, because the clock may have paused while the device slept.
 
 ```dart
 @override
@@ -100,23 +135,23 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
 }
 ```
 
-The anchor lives in memory only. A new process starts unsynced; nothing is saved to disk, because a stored offset would be wrong after a reboot.
+The time lives in memory only. A new process starts with no time; nothing is saved to disk, because a stored offset would be wrong after a reboot.
 
 ## Accuracy
 
-About ±1 second. `uncertainty` gives the worst-case error of the current anchor: half the round trip plus half a second for the `Date` header's resolution. `onAnchor` emits a `ClockSample` each time the anchor changes, with `deviceSkew` (server minus device) for logging or a "your device time is off" banner.
-
-This is for client-side decisions. It is not a security boundary: anyone who can rewrite responses (for example a proxy on a rooted device) can change the `Date` header. Enforce anything that matters on the server.
+About ±1 second; a few seconds at worst on slow networks. `uncertainty` gives the worst-case error of the current sample: half the round trip plus half a second for the `Date` header's resolution. `onAnchor` emits a `ClockSample` for each accepted response, with `deviceSkew` (server minus device) for logging or a "your device time is off" banner.
 
 ## Fixed offsets
 
-`nowIn(offset)` returns a `DateTime` whose fields (hour, minute, weekday) are the wall-clock time at that offset. It is still flagged UTC, so read or format its fields, but never store it, send it, or call `toLocal()` on it. Store and send `now.millisecondsSinceEpoch` instead.
+`nowIn(offset)` returns a `DateTime?` whose fields (hour, minute, weekday) are the wall-clock time at that offset. It is still flagged UTC, so read or format its fields, but never store it, send it, or call `toLocal()` on it. Store and send `now!.millisecondsSinceEpoch` instead.
 
 Example: checking market hours in India Standard Time.
 
 ```dart
-bool isMarketOpen(ServerClock serverClock) {
+/// True or false, or null when the time is unknown.
+bool? isMarketOpen(ServerClock serverClock) {
   final t = serverClock.nowIn(const Duration(hours: 5, minutes: 30));
+  if (t == null) return null;
   if (t.weekday == DateTime.saturday || t.weekday == DateTime.sunday) {
     return false;
   }
@@ -135,9 +170,13 @@ Browsers hide the `Date` header on cross-origin requests. The server must send `
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `maxRoundTrip` | 2 s | Slower samples are ignored once synced |
-| `maxRoundTripBeforeSync` | 10 s | Looser limit before the first sample and after `invalidate()` |
-| `maxAnchorAge` | 5 min | After this, a less precise sample may replace the anchor |
+| `maxRoundTrip` | 2 s | Slower samples are ignored while the clock has a time |
+| `maxRoundTripBeforeSync` | 10 s | Looser limit while the clock has no time |
+| `tolerance` | 5 s | How far a sample may disagree before it counts as ahead or behind |
+
+## Performance
+
+Nothing runs in the background: no timers, threads or wake-ups, so there is no idle cost. Reading `now` is one monotonic clock read (tens of nanoseconds); each sampled response adds one header parse (about a microsecond). It's safe to read `now` in `build()`.
 
 ## FAQ
 
