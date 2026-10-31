@@ -26,7 +26,7 @@ Breaking release: the clock now gives a valid time or no time.
 - The example is now a Flutter test app for Android and iOS, with a deep-sleep check
 
 ### Migration from 0.1.0
-- Handle null wherever you read the time: `final now = serverClock.now; if (now == null) { /* unknown: show "syncing…" */ }`. Don't replace null with `DateTime.now()` in decisions
+- Handle null wherever you read the time: `final now = ServerClock.instance.now; if (now == null) { /* unknown: show "syncing…" */ }`. Don't replace null with `DateTime.now()` in decisions
 - Remove `maxAnchorAge:` from `ServerClock(...)`
 - `pathPrefixes: ['/api/v1/']` becomes `allow: ['/api/v1']`. Note the `/` boundary: a prefix that relied on partial matches (`/api/user` for `/api/users`) needs each path listed
 - `ServerClockInterceptor(myClock)` becomes `ServerClockInterceptor(serverClock: myClock)`, or `ServerClockInterceptor()` with `ServerClock.instance` in place of your clock

@@ -28,7 +28,7 @@ Pure Dart package: server-anchored time for Dio apps from the HTTP `Date` header
 
 ## Known limitations (intentional or deferred)
 - Where sleep isn't counted (web, Windows), `now` is null after `invalidate()` until the next sample; without an `invalidate()` call on resume it would lag by the sleep time.
-- Sleep counting on Android and iOS is verified by Apple's docs and Linux semantics, not yet by an automated test on devices.
+- Sleep counting was verified by hand on real devices with the example app (2026-Oct-31): a vivo phone on Android 16 (64-bit, 30 min unplugged) and an iPhone 11 on iOS 27.0.1 (31 min unplugged, and 15 min in Low Power Mode), each within 1 s of the server. There is no automated device test, and 32-bit Android is untested.
 - A cached response without `Age` or cache headers (seen on public, `max-age` responses) can't be detected; sample only private, per-user APIs. The `tolerance` rule rejects such a sample once the clock has a newer time.
 - The round trip includes body download and other interceptors' response work.
 - A server or CDN with a wrong clock can't be detected.
