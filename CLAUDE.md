@@ -24,5 +24,11 @@ Pure Dart package: server-anchored time for Dio apps from the HTTP `Date` header
 - The round trip includes body download and other interceptors' response work.
 - A server or CDN with a wrong clock can't be detected.
 
+## CI
+- `.github/workflows/ci.yml` runs on every PR and push to `main`: `verify` (format, `dart analyze --fatal-infos`, tests, publish dry run on Dart 3.9.2) and `compat` (the minimum Dart SDK 3.7.2, and Dio 4.0.0 via `pubspec_overrides.yaml`).
+- Keep the SDK versions in `ci.yml` and `publish.yml` in sync; raise the `compat` SDK if the pubspec's minimum SDK changes.
+
 ## Releases
-- Keep user-facing changes under `## [Unreleased]` in CHANGELOG.md until release; version entries are dated like `2026-Oct-31`.
+- Version bump in `pubspec.yaml`, CHANGELOG entry dated like `2026-Oct-31`, merged via a `release/vX.Y.Z` pull request. Keep user-facing changes under `## [Unreleased]` until then.
+- Pushing a `vX.Y.Z` tag on `main` runs `.github/workflows/publish.yml`, which publishes to pub.dev after manual approval in the `pub.dev` environment, then creates the GitHub Release (title `X.Y.Z`, the version's CHANGELOG section, then a link to all code changes since the previous version; see `.github/scripts/`).
+- Exception: pub.dev only allows automated publishing for a package that already exists, so `0.1.0` is published once by hand with `dart pub publish`. After that, never publish locally or create GitHub Releases by hand.

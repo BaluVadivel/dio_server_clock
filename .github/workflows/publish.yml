@@ -1,0 +1,110 @@
+name: Publish to pub.dev
+
+# Only a pushed version tag (e.g. v0.2.0) starts a release. pub.dev also
+# checks the repository and tag pattern configured in its admin settings.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+# Never run two releases at once.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Tag must match pubspec version
+        run: |
+          version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | tr -d '[:space:]')
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match pubspec.yaml version $version"
+            exit 1
+          fi
+
+      - name: Tagged commit must be on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME points to a commit that is not on main"
+            exit 1
+          fi
+
+      # Checked before publishing, so a missing section stops the release
+      # instead of failing after the version is live on pub.dev.
+      - name: CHANGELOG must have notes for this version
+        run: bash .github/scripts/release_notes.sh "${GITHUB_REF_NAME#v}" > /dev/null
+
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: 3.9.2
+
+      - run: dart pub get
+
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed lib test example
+
+      - run: dart analyze --fatal-infos
+
+      - run: dart test
+
+      - name: Publish dry run
+        run: dart pub publish --dry-run
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Waits for manual approval by the environment's required reviewers.
+    environment: pub.dev
+    permissions:
+      contents: read
+      id-token: write # OIDC token for pub.dev; no stored secrets
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Configures pub.dev credentials from the GitHub OIDC token.
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: 3.9.2
+
+      - run: dart pub get
+
+      - run: dart pub publish --force
+
+  github-release:
+    # Only after pub.dev accepted the version.
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # all tags, to find the previous release
+
+      # Title "X.Y.Z"; body is the CHANGELOG section plus a link to all code
+      # changes since the previous version.
+      - name: Create GitHub Release from CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; skipping."
+            exit 0
+          fi
+          bash .github/scripts/release_body.sh "$GITHUB_REF_NAME" > release-notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            --title "${GITHUB_REF_NAME#v}" \
+            --notes-file release-notes.md \
+            --verify-tag
